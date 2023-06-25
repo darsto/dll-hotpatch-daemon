@@ -1,0 +1,68 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "DLL Daemon Attach",
+            "type": "cppdbg",
+            "request": "launch",
+            // the file needs to exist so that vscode doesn't complain,
+            // but we're replacing its path in the gdbserver daemon anyway
+            "program": "${workspaceFolder}/Makefile",
+            "MIMode": "gdb",
+            "linux": {
+                "MIMode": "gdb"
+            },
+            "osx": {
+                "MIMode": "gdb"
+            },
+            "windows": {
+                "MIMode": "gdb"
+            },
+            "cwd": "${workspaceFolder}",
+            "miDebuggerPath": "${workspaceFolder}/tools/daemon_cmd_gdb.sh",
+            // miDebuggerServerAddress makes vscode think we're debugging remotely.
+            // We need this, but the value doesn't matter as the relevant gdb command
+            // is overwritten inside the daemon.
+            "miDebuggerServerAddress": "127.0.0.1:61772",
+            "launchCompleteCommand": "exec-run",
+            "customLaunchSetupCommands": [],
+            // this is entirely synthetic sugar to make debugging easier
+            "setupCommands": [
+                {
+                    "text": "set architecture i386"
+                },
+                {
+                    "text": "set disassembly-flavor intel"
+                },
+                {
+                    "text": "set print thread-events off"
+                },
+                {
+                    "text": "set substitute-path w:/YOUR/REMOTE/DIR ${workspaceFolder}"
+                },
+                {
+                    "text": "-enable-pretty-printing"
+                },
+            ],
+            "sourceFileMap": {
+                "w:/YOUR/REMOTE/DIR": "${workspaceFolder}"
+            },
+            // if symbol loading takes too long, limit it to just the relevant files
+            "symbolLoadInfo":{
+                "loadAll": true,
+                // "exceptionList": "my.dll;my.exe"
+            },
+            // enable the following traces if anything goes wrong
+            "logging": {
+                "engineLogging": false,
+                "trace": false,
+                "traceResponse": false,
+                "exceptions": false
+            }
+        }
+
+    ]
+}
