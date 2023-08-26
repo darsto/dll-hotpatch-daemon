@@ -31,24 +31,31 @@ struct exe_process {
 	char dllname[PATH_MAX];
 };
 
-/** Detach a specific HMODULE dll from given pid */
+struct remote_call_ctx {
+	HANDLE prochandle;
+
+	FARPROC fn_addr;
+	void *fn_arg;
+
+	size_t timeout_ms;
+
+	void **ret;
+};
+
 static int
-detach_dll(HANDLE prochandle, HMODULE dll)
+remote_call(struct remote_call_ctx *ctx)
 {
 	HANDLE thr;
-	uintptr_t free_lib_winapi_addr;
 	DWORD thr_state;
 	unsigned start_ts, ts;
 
-	free_lib_winapi_addr =
-	    (uintptr_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "FreeLibrary");
-	if (free_lib_winapi_addr == 0x0) {
-		return -ENOSYS;
+	if (ctx->fn_addr == 0x0) {
+		return -EINVAL;
 	}
 
-	thr = CreateRemoteThread(prochandle, NULL, 0,
-				 (LPTHREAD_START_ROUTINE)free_lib_winapi_addr,
-				 (LPVOID)dll, 0, NULL);
+	thr = CreateRemoteThread(ctx->prochandle, NULL, 0,
+				 (LPTHREAD_START_ROUTINE)ctx->fn_addr,
+				 (LPVOID)ctx->fn_arg, 0, NULL);
 	if (thr == NULL) {
 		return -EIO;
 	}
@@ -60,13 +67,20 @@ detach_dll(HANDLE prochandle, HMODULE dll)
 		}
 
 		Sleep(50);
+		if (ctx->timeout_ms == 0) {
+			continue;
+		}
 
 		ts = GetTickCount();
-		if (ts - start_ts > 1500) {
+		if (ts - start_ts > ctx->timeout_ms) {
 			TerminateThread(thr, 1);
 			CloseHandle(thr);
 			return -ETIMEDOUT;
 		}
+	}
+
+	if (ctx->ret) {
+		*ctx->ret = (void *)thr_state;
 	}
 
 	CloseHandle(thr);
@@ -74,26 +88,28 @@ detach_dll(HANDLE prochandle, HMODULE dll)
 	return 0;
 }
 
+/** Detach a specific HMODULE dll from given pid */
+static int
+detach_dll(HANDLE prochandle, HMODULE dll)
+{
+	return remote_call(&(struct remote_call_ctx){
+	    .prochandle = prochandle,
+	    .fn_addr = GetProcAddress(GetModuleHandleA("kernel32.dll"), "FreeLibrary"),
+	    .fn_arg = dll,
+	    .timeout_ms = 1500,
+	    .ret = NULL });
+}
+
 /** Inject dll at given path to given pid */
 static HMODULE
 inject_dll(HANDLE prochandle, char *path_to_dll)
 {
-	HANDLE thr;
 	LPVOID ext_path_to_dll;
-	LPVOID load_lib_winapi_addr;
 	HMODULE injected_dll = NULL;
-	DWORD thr_state;
 	int rc;
 
-	load_lib_winapi_addr =
-	    (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
-	if (load_lib_winapi_addr == NULL) {
-		goto err;
-	}
-
-	ext_path_to_dll =
-	    (LPVOID)VirtualAllocEx(prochandle, NULL, strlen(path_to_dll) + 1,
-				   MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	ext_path_to_dll = VirtualAllocEx(prochandle, NULL, strlen(path_to_dll) + 1,
+					 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	if (ext_path_to_dll == NULL) {
 		goto err;
 	}
@@ -104,23 +120,18 @@ inject_dll(HANDLE prochandle, char *path_to_dll)
 		goto err_free;
 	}
 
-	thr = CreateRemoteThread(prochandle, NULL, 0,
-				 (LPTHREAD_START_ROUTINE)load_lib_winapi_addr,
-				 ext_path_to_dll, 0, NULL);
-	if (thr == NULL) {
+	rc = remote_call(&(struct remote_call_ctx){
+	    .prochandle = prochandle,
+	    .fn_addr = GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"),
+	    .fn_arg = ext_path_to_dll,
+	    .timeout_ms = 0,
+	    .ret = (void **)&injected_dll });
+
+	if (rc != 0) {
 		goto err_free;
 	}
 
-	while (GetExitCodeThread(thr, &thr_state)) {
-		if (thr_state != STILL_ACTIVE) {
-			injected_dll = (HMODULE)thr_state;
-			break;
-		}
-	}
-
 	VirtualFreeEx(prochandle, ext_path_to_dll, 0, MEM_RELEASE);
-	CloseHandle(thr);
-
 	DeleteFile(path_to_dll);
 	return injected_dll;
 
