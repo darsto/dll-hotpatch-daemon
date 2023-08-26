@@ -88,10 +88,103 @@ remote_call(struct remote_call_ctx *ctx)
 	return 0;
 }
 
+/* CreateRemoteThread() accepts only one parameter, but GetProcAddress()
+ * requires two. We'll use the following thunk of code two decompose a
+ * single buffer into two arguments, then call GetProcAddress().
+ *
+ * This function will be copied to another process' address space. Must
+ * be position independent.
+ *
+ * The following buffer is expected at [esp]:
+ * [ GetProcAddress ] [ hModule ] [ Null-terminated string ]
+ * 0x0      ...       0x4   ...   0x8 0x9 0xA 0xB 0xC 0xD ...
+ */
+__attribute__((noinline, section("callprocaddress_thunk"))) static DWORD WINAPI
+callprocaddress_thunk(void *ctx)
+{
+	FARPROC(WINAPI * getprocaddr)(HMODULE, const char *) = *(void **)ctx;
+	HMODULE hmod = *(void **)(ctx + 4);
+	const char *str = (const char *)(ctx + 8);
+
+	void (*fn)(void) = (void *)getprocaddr(hmod, str);
+	fn();
+	return 0;
+}
+
+static int
+remote_callprocaddress(HANDLE prochandle, HMODULE dll, const char *fn_name)
+{
+	LPVOID thunk;
+	LPVOID thunk_data;
+	int rc;
+
+	extern unsigned char __start_callprocaddress_thunk[];
+	extern unsigned char __stop_callprocaddress_thunk[];
+
+	size_t thunk_size = (size_t)((uintptr_t)__stop_callprocaddress_thunk -
+				     (uintptr_t)__start_callprocaddress_thunk);
+	thunk = VirtualAllocEx(prochandle, NULL, thunk_size, MEM_RESERVE | MEM_COMMIT,
+			       PAGE_EXECUTE_READWRITE);
+	if (thunk == NULL) {
+		goto err;
+	}
+
+	rc = WriteProcessMemory(prochandle, thunk, (LPCVOID)callprocaddress_thunk,
+				thunk_size, NULL);
+	if (rc == 0) {
+		goto err_free_thunk;
+	}
+
+	size_t thunk_data_size = 4 + 4 + strlen(fn_name) + 1;
+	thunk_data = VirtualAllocEx(prochandle, NULL, thunk_data_size,
+				    MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	if (thunk_data == NULL) {
+		goto err;
+	}
+
+	char *buf = calloc(1, thunk_data_size);
+	assert(buf != NULL);
+
+	*(uint32_t *)buf =
+	    (uint32_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetProcAddress");
+	*(uint32_t *)(buf + 4) = (uint32_t)dll;
+	memcpy(buf + 8, fn_name, strlen(fn_name) + 1);
+
+	rc = WriteProcessMemory(prochandle, thunk_data, (LPCVOID)buf, thunk_data_size,
+				NULL);
+	free(buf);
+
+	if (rc == 0) {
+		goto err_free_data;
+	}
+
+	rc = remote_call(&(struct remote_call_ctx){ .prochandle = prochandle,
+						    .fn_addr = (FARPROC)thunk,
+						    .fn_arg = thunk_data,
+						    .timeout_ms = 0,
+						    .ret = NULL });
+
+	VirtualFreeEx(prochandle, thunk_data, 0, MEM_RELEASE);
+	VirtualFreeEx(prochandle, thunk, 0, MEM_RELEASE);
+	return rc;
+
+err_free_data:
+	VirtualFreeEx(prochandle, thunk_data, 0, MEM_RELEASE);
+err_free_thunk:
+	VirtualFreeEx(prochandle, thunk, 0, MEM_RELEASE);
+err:
+	return -1;
+}
+
 /** Detach a specific HMODULE dll from given pid */
 static int
 detach_dll(HANDLE prochandle, HMODULE dll)
 {
+	int rc = remote_callprocaddress(prochandle, dll, "Deinit");
+	if (rc == 0) {
+		/* Deinit probably doesn't exist in the DLL, unload anyway */
+	}
+
 	return remote_call(&(struct remote_call_ctx){
 	    .prochandle = prochandle,
 	    .fn_addr = GetProcAddress(GetModuleHandleA("kernel32.dll"), "FreeLibrary"),
