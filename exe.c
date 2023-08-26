@@ -294,45 +294,6 @@ exe_get_pid(struct exe_process *proc)
 	return (unsigned)proc->pid;
 }
 
-static void
-resume_all_threads(DWORD proc_id)
-{
-	HANDLE h;
-	THREADENTRY32 te;
-
-	h = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-	if (h == INVALID_HANDLE_VALUE) {
-		return;
-	}
-
-	te.dwSize = sizeof(te);
-	if (!Thread32First(h, &te)) {
-		CloseHandle(h);
-		return;
-	}
-
-	do {
-		if (te.dwSize < FIELD_OFFSET(THREADENTRY32, th32OwnerProcessID) +
-				    sizeof(te.th32OwnerProcessID)) {
-			continue;
-		}
-
-		if (te.th32OwnerProcessID != proc_id) {
-			continue;
-		}
-
-		HANDLE thread = OpenThread(THREAD_ALL_ACCESS, FALSE, te.th32ThreadID);
-		if (thread != NULL) {
-			ResumeThread(thread);
-			CloseHandle(thread);
-		}
-
-		te.dwSize = sizeof(te);
-	} while (Thread32Next(h, &te));
-
-	CloseHandle(h);
-}
-
 int
 exe_rehook_dll(struct exe_process *proc)
 {
@@ -349,8 +310,6 @@ exe_rehook_dll(struct exe_process *proc)
 	if (rc != 0) {
 		return -ELIBBAD;
 	}
-
-	resume_all_threads(proc->pid);
 
 	return 0;
 }
