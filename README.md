@@ -2,7 +2,7 @@
 
 This is a daemon for triggering remote re-compilation and runtime re-injecting of a DLL into an x86 process. Write DLLs potentially on a Linux machine, seamlessly compile and run them on a Windows box. This includes a GDB wrapper that essentially acts as a gdbserver. Hot-patch DLLs while debugging, inspect the bugs as they come. Or attach/detach on demand.
 
-**WARNING! The daemon is capable of executing any shell commands received on a TCP socket, use with caution.**
+**WARNING! The daemon is capable of executing any shell commands received on a TCP socket**
 
 ## Basic usage:
 
@@ -20,9 +20,7 @@ nc $IP 61171 <<< "hook"
 
 The above will compile mylib.dll in the hookdaemon's current directory [^1], then the special `hook` command will either start the exe with mylib.dll injected, or if the exe is already running it will first detach the previous dll, then attach the new one.
 
-The only requirement on the DLL itself is on the DllMain(DLL_PROCESS_DETACH) which **must** suspend all threads besides the one that called DllMain(DLL_PROCESS_DETACH). This is the DLL's responsibility because it needs to make sure none of the threads are executing the code that's about to be unloaded. If they are, they can be un-suspended and suspended again after a while. This functionality is implemented in [patchmem](https://github.com/darsto/patchmem) runtime code patching library (for x86 32-bit).
-
-The same behavior would be expected from DllMain(DLL_PROCESS_ATTACH), but in current version it's always the daemon that resumes all processes after injecting the DLL. This is error prone, but good enough for now.
+Any DLL can be detached and re-attached. If the DLL exports a `Deinit` function, it will be first called before unloading. If the DLL is critical to program execution and can't be unloaded at any time, then it's the DLL's responsibility to put the application into safe-to-unload state before actually unloading. This functionality is implemented in [patchmem](https://github.com/darsto/patchmem) runtime code patching library (for x86 32-bit).
 
 All regular commands have their output sent back (streamed) over the same connection, which is always terminated once the command has finished. A single connection can run multiple commands if they're chained with ; or &&, etc. stderr and stdout are combined.
 
